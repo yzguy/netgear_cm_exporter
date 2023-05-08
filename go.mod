@@ -1,4 +1,4 @@
-module github.com/ickymettle/netgear_cm_exporter
+module github.com/yzguy/netgear_cm_exporter
 
 go 1.20
 

@@ -1,6 +1,6 @@
 # Netgear Cable Modem Exporter
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/ickymettle/netgear_cm_exporter)](https://goreportcard.com/report/github.com/ickymettle/netgear_cm_exporter)
+[![Go Report Card](https://goreportcard.com/badge/github.com/yzguy/netgear_cm_exporter)](https://goreportcard.com/report/github.com/yzguy/netgear_cm_exporter)
 
 This project is now archived, unfortunately I no longer have access to a Netgear CMxxx series modem
 making it very difficult to support this code without a device to test it on. Thanks everyone for your
@@ -24,7 +24,7 @@ These Netgear models have been tested and are officially supported:
 You can build and install the exporter locally by running:
 
 ```
-go get github.com/ickymettle/netgear_cm_exporter
+go get github.com/yzguy/netgear_cm_exporter
 ```
 
 ## Usage
