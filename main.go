@@ -138,7 +138,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 		"loginUsername": e.username,
 		"loginPassword": e.password,
 		"login":         "1",
-		"webToken":      "1683485876",
+		"webToken":      "1683555075",
 	})
 	if err != nil {
 		log.Fatal(err)
