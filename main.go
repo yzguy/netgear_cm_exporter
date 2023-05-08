@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/base64"
 	"flag"
 	"fmt"
 	"log"
@@ -28,7 +27,10 @@ var (
 
 // Exporter represents an instance of the Netgear cable modem exporter.
 type Exporter struct {
-	url, authHeaderValue string
+	loginUrl string
+	dataUrl  string
+	username string
+	password string
 
 	mu sync.Mutex
 
@@ -37,21 +39,14 @@ type Exporter struct {
 	scrapeErrors prometheus.Counter
 
 	// Downstream metrics.
-	dsChannelSNR               *prometheus.Desc
-	dsChannelPower             *prometheus.Desc
-	dsChannelCorrectableErrs   *prometheus.Desc
-	dsChannelUncorrectableErrs *prometheus.Desc
+	dsChannelPower                  *prometheus.Desc
+	dsChannelSNR                    *prometheus.Desc
+	dsChannelUnerroredCodewords     *prometheus.Desc
+	dsChannelCorrectableCodewords   *prometheus.Desc
+	dsChannelUncorrectableCodewords *prometheus.Desc
 
 	// Upstream metrics.
-	usChannelPower      *prometheus.Desc
-	usChannelSymbolRate *prometheus.Desc
-}
-
-// basicAuth returns the base64 encoding of the username and password
-// separated by a colon. Borrowed the net/http package.
-func basicAuth(username, password string) string {
-	auth := fmt.Sprintf("%s:%s", username, password)
-	return base64.StdEncoding.EncodeToString([]byte(auth))
+	usChannelPower *prometheus.Desc
 }
 
 // NewExporter returns an instance of Exporter configured with the modem's
@@ -59,13 +54,15 @@ func basicAuth(username, password string) string {
 func NewExporter(addr, username, password string) *Exporter {
 	var (
 		dsLabelNames = []string{"channel", "lock_status", "modulation", "channel_id", "frequency"}
-		usLabelNames = []string{"channel", "lock_status", "channel_type", "channel_id", "frequency"}
+		usLabelNames = []string{"channel", "lock_status", "modulation", "channel_id", "frequency"}
 	)
 
 	return &Exporter{
 		// Modem access details.
-		url:             "http://" + addr + "/DocsisStatus.asp",
-		authHeaderValue: "Basic " + basicAuth(username, password),
+		loginUrl: "http://" + addr + "/goform/GenieLogin",
+		dataUrl:  "http://" + addr + "/DocsisStatus.asp",
+		username: username,
+		password: password,
 
 		// Collection metrics.
 		totalScrapes: prometheus.NewCounter(prometheus.CounterOpts{
@@ -80,23 +77,28 @@ func NewExporter(addr, username, password string) *Exporter {
 		}),
 
 		// Downstream metrics.
-		dsChannelSNR: prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, "downstream_channel", "snr_db"),
-			"Downstream channel signal to noise ratio in dB.",
-			dsLabelNames, nil,
-		),
 		dsChannelPower: prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, "downstream_channel", "power_dbmv"),
 			"Downstream channel power in dBmV.",
 			dsLabelNames, nil,
 		),
-		dsChannelCorrectableErrs: prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, "downstream_channel", "correctable_errors_total"),
+		dsChannelSNR: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "downstream_channel", "snr_db"),
+			"Downstream channel signal to noise ratio in dB.",
+			dsLabelNames, nil,
+		),
+		dsChannelUnerroredCodewords: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "downstream_channel", "unerrored_codewords_total"),
 			"Downstream channel correctable errors.",
 			dsLabelNames, nil,
 		),
-		dsChannelUncorrectableErrs: prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, "downstream_channel", "uncorrectable_errors_total"),
+		dsChannelCorrectableCodewords: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "downstream_channel", "correctable_codewords_total"),
+			"Downstream channel correctable errors.",
+			dsLabelNames, nil,
+		),
+		dsChannelUncorrectableCodewords: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "downstream_channel", "uncorrectable_codewords_total"),
 			"Downstream channel uncorrectable errors.",
 			dsLabelNames, nil,
 		),
@@ -105,11 +107,6 @@ func NewExporter(addr, username, password string) *Exporter {
 		usChannelPower: prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, "upstream_channel", "power_dbmv"),
 			"Upstream channel power in dBmV.",
-			usLabelNames, nil,
-		),
-		usChannelSymbolRate: prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, "upstream_channel", "symbol_rate"),
-			"Upstream channel symbol rate per second",
 			usLabelNames, nil,
 		),
 	}
@@ -121,13 +118,13 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 	ch <- e.totalScrapes.Desc()
 	ch <- e.scrapeErrors.Desc()
 	// Downstream metrics.
-	ch <- e.dsChannelSNR
 	ch <- e.dsChannelPower
-	ch <- e.dsChannelCorrectableErrs
-	ch <- e.dsChannelUncorrectableErrs
+	ch <- e.dsChannelSNR
+	ch <- e.dsChannelUnerroredCodewords
+	ch <- e.dsChannelCorrectableCodewords
+	ch <- e.dsChannelUncorrectableCodewords
 	// Upstream metrics.
 	ch <- e.usChannelPower
-	ch <- e.usChannelSymbolRate
 }
 
 // Collect runs our scrape loop returning each Prometheus metric.
@@ -136,10 +133,16 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 
 	c := colly.NewCollector()
 
-	// OnRequest callback adds basic auth header.
-	c.OnRequest(func(r *colly.Request) {
-		r.Headers.Add("Authorization", e.authHeaderValue)
+	// Login to get a session cookie
+	err := c.Post(e.loginUrl, map[string]string{
+		"loginUsername": e.username,
+		"loginPassword": e.password,
+		"login":         "1",
+		"webToken":      "1683485876",
 	})
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// OnError callback counts any errors that occur during scraping.
 	c.OnError(func(r *colly.Response, err error) {
@@ -154,15 +157,16 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 				return // no rows were returned
 			}
 			var (
-				channel    string
-				lockStatus string
-				modulation string
-				channelID  string
-				freqMHz    string
-				snr        float64
-				power      float64
-				corrErrs   float64
-				unCorrErrs float64
+				channel                string
+				lockStatus             string
+				modulation             string
+				channelID              string
+				freqMHz                string
+				power                  float64
+				snr                    float64
+				unerroredCodewords     float64
+				correctableCodewords   float64
+				uncorrectableCodewords float64
 			)
 			row.Find("td").Each(func(j int, col *goquery.Selection) {
 				text := strings.TrimSpace(col.Text())
@@ -187,17 +191,20 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 				case 6:
 					fmt.Sscanf(text, "%f dB", &snr)
 				case 7:
-					fmt.Sscanf(text, "%f", &corrErrs)
+					fmt.Sscanf(text, "%f", &unerroredCodewords)
 				case 8:
-					fmt.Sscanf(text, "%f", &unCorrErrs)
+					fmt.Sscanf(text, "%f", &correctableCodewords)
+				case 9:
+					fmt.Sscanf(text, "%f", &uncorrectableCodewords)
 				}
 			})
 			labels := []string{channel, lockStatus, modulation, channelID, freqMHz}
 
-			ch <- prometheus.MustNewConstMetric(e.dsChannelSNR, prometheus.GaugeValue, snr, labels...)
 			ch <- prometheus.MustNewConstMetric(e.dsChannelPower, prometheus.GaugeValue, power, labels...)
-			ch <- prometheus.MustNewConstMetric(e.dsChannelCorrectableErrs, prometheus.CounterValue, corrErrs, labels...)
-			ch <- prometheus.MustNewConstMetric(e.dsChannelUncorrectableErrs, prometheus.CounterValue, unCorrErrs, labels...)
+			ch <- prometheus.MustNewConstMetric(e.dsChannelSNR, prometheus.GaugeValue, snr, labels...)
+			ch <- prometheus.MustNewConstMetric(e.dsChannelUnerroredCodewords, prometheus.CounterValue, unerroredCodewords, labels...)
+			ch <- prometheus.MustNewConstMetric(e.dsChannelCorrectableCodewords, prometheus.CounterValue, correctableCodewords, labels...)
+			ch <- prometheus.MustNewConstMetric(e.dsChannelUncorrectableCodewords, prometheus.CounterValue, uncorrectableCodewords, labels...)
 		})
 	})
 
@@ -208,13 +215,12 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 				return // no rows were returned
 			}
 			var (
-				channel     string
-				lockStatus  string
-				channelType string
-				channelID   string
-				symbolRate  float64
-				freqMHz     string
-				power       float64
+				channel    string
+				lockStatus string
+				modulation string
+				channelID  string
+				freqMHz    string
+				power      float64
 			)
 			row.Find("td").Each(func(j int, col *goquery.Selection) {
 				text := strings.TrimSpace(col.Text())
@@ -224,33 +230,27 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 				case 1:
 					lockStatus = text
 				case 2:
-					channelType = text
+					modulation = text
 				case 3:
 					channelID = text
 				case 4:
-					{
-						fmt.Sscanf(text, "%f Ksym/sec", &symbolRate)
-						symbolRate = symbolRate * 1000 // convert to sym/sec
-					}
-				case 5:
 					{
 						var freqHZ float64
 						fmt.Sscanf(text, "%f Hz", &freqHZ)
 						freqMHz = fmt.Sprintf("%0.2f MHz", freqHZ/1e6)
 					}
-				case 6:
+				case 5:
 					fmt.Sscanf(text, "%f dBmV", &power)
 				}
 			})
-			labels := []string{channel, lockStatus, channelType, channelID, freqMHz}
+			labels := []string{channel, lockStatus, modulation, channelID, freqMHz}
 
 			ch <- prometheus.MustNewConstMetric(e.usChannelPower, prometheus.GaugeValue, power, labels...)
-			ch <- prometheus.MustNewConstMetric(e.usChannelSymbolRate, prometheus.GaugeValue, symbolRate, labels...)
 		})
 	})
 
 	e.mu.Lock()
-	c.Visit(e.url)
+	c.Visit(e.dataUrl)
 	e.totalScrapes.Collect(ch)
 	e.scrapeErrors.Collect(ch)
 	e.mu.Unlock()
