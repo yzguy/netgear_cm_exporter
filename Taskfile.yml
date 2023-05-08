@@ -1,0 +1,17 @@
+version: '3'
+
+vars:
+  DOCKER_IMAGE: registry.yzguy.net/netgear_cm_exporter
+  GIT_COMMIT:
+    sh: git log -n 1 --format=%h
+
+tasks:
+  build:
+    desc: Build {{ .DOCKER_IMAGE }}
+    cmds:
+      - docker build -t {{ .DOCKER_IMAGE }}:{{ .GIT_COMMIT }} .
+
+  push:
+    desc: Push {{ .DOCKER_IMAGE }}
+    cmds:
+      - docker push {{ .DOCKER_IMAGE }}:{{ .GIT_COMMIT }}
