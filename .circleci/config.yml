@@ -1,0 +1,19 @@
+version: 2.1
+
+executors:
+  runner:
+    machine: true
+    resource_class: yzguy/runner
+
+jobs:
+  build:
+    executor: runner
+    steps:
+      - checkout
+      - run: task build
+      - run: task push
+
+workflows:
+  build_image:
+    jobs:
+      - build
