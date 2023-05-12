@@ -51,8 +51,15 @@ func NewConfigFromFile(path string) (*Config, error) {
 		return nil, errors.Wrap(err, "unable to parse config YAML")
 	}
 
+	// Look for password in config
 	if config.Modem.Password == "" {
-		return nil, fmt.Errorf("modem password isn't set in config")
+		// Look in environment variable
+		val, ok := os.LookupEnv("NETGEAR_MODEM_PASSWORD")
+		if !ok {
+			return nil, fmt.Errorf("modem password isn't set in config or environment variable")
+		}
+
+        config.Modem.Password = val
 	}
 
 	return &config, nil
