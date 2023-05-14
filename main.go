@@ -31,6 +31,7 @@ type Exporter struct {
 	dataUrl  string
 	username string
 	password string
+    webToken string
 
 	mu sync.Mutex
 
@@ -51,7 +52,7 @@ type Exporter struct {
 
 // NewExporter returns an instance of Exporter configured with the modem's
 // address, admin username and password.
-func NewExporter(addr, username, password string) *Exporter {
+func NewExporter(addr, username, password, webtoken string) *Exporter {
 	var (
 		dsLabelNames = []string{"channel", "lock_status", "modulation", "channel_id", "frequency"}
 		usLabelNames = []string{"channel", "lock_status", "modulation", "channel_id", "frequency"}
@@ -63,6 +64,7 @@ func NewExporter(addr, username, password string) *Exporter {
 		dataUrl:  "http://" + addr + "/DocsisStatus.asp",
 		username: username,
 		password: password,
+		webToken: webtoken,
 
 		// Collection metrics.
 		totalScrapes: prometheus.NewCounter(prometheus.CounterOpts{
@@ -138,7 +140,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 		"loginUsername": e.username,
 		"loginPassword": e.password,
 		"login":         "1",
-		"webToken":      "1683555075",
+		"webToken":      e.webToken,
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -274,7 +276,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	exporter := NewExporter(config.Modem.Address, config.Modem.Username, config.Modem.Password)
+	exporter := NewExporter(config.Modem.Address, config.Modem.Username, config.Modem.Password, config.Modem.WebToken)
 
 	prometheus.MustRegister(exporter)
 
