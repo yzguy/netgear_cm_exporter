@@ -157,7 +157,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("Current web token: %s", webToken)
+	//log.Printf("Current web token: %s", webToken)
 
 	// Login to get a session cookie
 	err = c.Post(e.loginUrl, map[string]string{
