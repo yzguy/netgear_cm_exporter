@@ -13,7 +13,6 @@ type Modem struct {
 	Address  string `yaml:"address"`
 	Username string `yaml:"username"`
 	Password string `yaml:"password"`
-	WebToken string `yaml:"webtoken"`
 }
 
 // Telemetry represents the exporter's listen address and metrics URI path.
@@ -61,16 +60,6 @@ func NewConfigFromFile(path string) (*Config, error) {
 		}
 
 		config.Modem.Password = val
-	}
-
-	if config.Modem.WebToken == "" {
-		// Look in environment variable
-		val, ok := os.LookupEnv("NETGEAR_MODEM_WEBTOKEN")
-		if !ok {
-			return nil, fmt.Errorf("modem webtoken isn't set in config or environment variable")
-		}
-
-		config.Modem.WebToken = val
 	}
 
 	return &config, nil

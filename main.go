@@ -27,11 +27,11 @@ var (
 
 // Exporter represents an instance of the Netgear cable modem exporter.
 type Exporter struct {
+	indexUrl string
 	loginUrl string
 	dataUrl  string
 	username string
 	password string
-    webToken string
 
 	mu sync.Mutex
 
@@ -52,7 +52,7 @@ type Exporter struct {
 
 // NewExporter returns an instance of Exporter configured with the modem's
 // address, admin username and password.
-func NewExporter(addr, username, password, webtoken string) *Exporter {
+func NewExporter(addr, username, password string) *Exporter {
 	var (
 		dsLabelNames = []string{"channel", "lock_status", "modulation", "channel_id", "frequency"}
 		usLabelNames = []string{"channel", "lock_status", "modulation", "channel_id", "frequency"}
@@ -60,11 +60,11 @@ func NewExporter(addr, username, password, webtoken string) *Exporter {
 
 	return &Exporter{
 		// Modem access details.
+		indexUrl: "http://" + addr + "/GenieLogin.asp",
 		loginUrl: "http://" + addr + "/goform/GenieLogin",
 		dataUrl:  "http://" + addr + "/DocsisStatus.asp",
 		username: username,
 		password: password,
-		webToken: webtoken,
 
 		// Collection metrics.
 		totalScrapes: prometheus.NewCounter(prometheus.CounterOpts{
@@ -129,18 +129,42 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 	ch <- e.usChannelPower
 }
 
+func (e *Exporter) GetWebToken() (string, error) {
+	resp, err := http.Get(e.indexUrl)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	webToken, _ := doc.Find(`input[name="webToken"]`).Attr("value")
+
+	return webToken, nil
+}
+
 // Collect runs our scrape loop returning each Prometheus metric.
 func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	e.totalScrapes.Inc()
 
 	c := colly.NewCollector()
 
+	// Retrieve current webToken
+	webToken, err := e.GetWebToken()
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("Current web token: %s", webToken)
+
 	// Login to get a session cookie
-	err := c.Post(e.loginUrl, map[string]string{
+	err = c.Post(e.loginUrl, map[string]string{
 		"loginUsername": e.username,
 		"loginPassword": e.password,
 		"login":         "1",
-		"webToken":      e.webToken,
+		"webToken":      webToken,
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -276,7 +300,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	exporter := NewExporter(config.Modem.Address, config.Modem.Username, config.Modem.Password, config.Modem.WebToken)
+	exporter := NewExporter(config.Modem.Address, config.Modem.Username, config.Modem.Password)
 
 	prometheus.MustRegister(exporter)
 
