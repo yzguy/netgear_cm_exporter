@@ -1,23 +1,12 @@
 # Netgear Cable Modem Exporter
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/yzguy/netgear_cm_exporter)](https://goreportcard.com/report/github.com/yzguy/netgear_cm_exporter)
-
-This project is now archived, unfortunately I no longer have access to a Netgear CMxxx series modem
-making it very difficult to support this code without a device to test it on. Thanks everyone for your
-support with this. As of 2023-02-25 i've updated the dependencies and confirmed it still builds clean
-on golang 1.20.1.
-
----
-
-Prometheus exporter for Netgear cable modems. This has been developed against a CM600, I suspect it
-is likely to work with other modems in the CMxxxx family. If you are able to run this successfully
-on another Netgear cable modem model, please see the contributing section below.
+Prometheus exporter for NETGEAR cable modems
 
 ## Supported Devices
 
 These Netgear models have been tested and are officially supported:
 
-* Netgear CM600
+* Netgear CM1000
 
 ## Installation
 
@@ -38,8 +27,11 @@ Usage of ./netgear_cm_exporter:
 ```
 
 An example configuration file is provided in `netgear_cm_exporter.yml` showing all the possible
-configuration options. The values in the example are the defaults, the bare minimum configuration
-is the administrative password to your modem:
+configuration options. The values in the example are the defaults
+
+You can also specify password via an environment variable
+
+* `NETGEAR_MODEM_PASSWORD`
 
 ```
 modem:
@@ -52,20 +44,3 @@ A sample grafana dashboard can be found in the `grafana/` directory. You can imp
 your Grafana instance to get up and running with a quick dashboard.
 
 ![Grafana Dashboard Screenshot](/grafana/dashboard_screenshot.png)
-
-## Contributing
-
-For the most part I assume the status pages for most of the modems in the CMxxxx family to be
-consistent, if you have a Netgear cable modem that isn't properly supported and you're happy to
-submit a PR, by all means do so.
-
-If you'd like me to try adding support please do the following:
-
-1. Send me the URL to the modem's status page, this may require some sleuthing in your browser's
-   developer console. Typically it's called via JavaScript from the "Cable Connection" link in
-   the admin UI. On the CM600 the URI is `/DocsisStatus.asp`.
-2. Once you're found the URI to the admin page, send me the saved HTML from that page and I can
-   look at what changes are needed to the scraper to support your model.
-   
-If you do get this running without modification on a CMxxx modem other than the CM600 please submit
-a PR to add your model to the list of supported models.
