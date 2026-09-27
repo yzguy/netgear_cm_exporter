@@ -12,8 +12,11 @@ These Netgear models have been tested and are officially supported:
 Set `modem.model` in your config file to `CM1000` (default) or `CM3000` to match your device. Newer
 Netgear firmware (as used on the CM3000) exposes docsis status through a different login flow and
 embeds channel data as JavaScript rather than static HTML, so the two models are scraped differently
-under the hood but expose the same downstream/upstream metrics. The CM3000 additionally exposes
-metrics for its DOCSIS 3.1 OFDM/OFDMA channels.
+under the hood but expose the same core downstream/upstream QAM and ATDMA channel metrics. One
+exception: `netgear_cm_downstream_channel_unerrored_codewords_total` is CM1000-only, since the
+CM3000's DOCSIS status page doesn't expose an unerrored codeword count for those channels. The
+CM3000 additionally exposes metrics (including unerrored codewords) for its DOCSIS 3.1 OFDM/OFDMA
+channels, which the CM1000 doesn't have.
 
 ## Installation
 

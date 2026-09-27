@@ -4,6 +4,107 @@ import (
 	"testing"
 )
 
+func TestNewExporterURLsByModel(t *testing.T) {
+	cases := []struct {
+		model                          string
+		wantIndex, wantLogin, wantData string
+	}{
+		{
+			model:     ModelCM1000,
+			wantIndex: "http://192.168.100.1/GenieLogin.asp",
+			wantLogin: "http://192.168.100.1/goform/GenieLogin",
+			wantData:  "http://192.168.100.1/DocsisStatus.asp",
+		},
+		{
+			model:     ModelCM3000,
+			wantIndex: "http://192.168.100.1/Login.htm",
+			wantLogin: "",
+			wantData:  "http://192.168.100.1/DocsisStatus.htm",
+		},
+	}
+
+	for _, c := range cases {
+		e := NewExporter("192.168.100.1", "admin", "secret", c.model)
+		if e.indexUrl != c.wantIndex {
+			t.Errorf("model %s: indexUrl = %q, want %q", c.model, e.indexUrl, c.wantIndex)
+		}
+		if e.loginUrl != c.wantLogin {
+			t.Errorf("model %s: loginUrl = %q, want %q", c.model, e.loginUrl, c.wantLogin)
+		}
+		if e.dataUrl != c.wantData {
+			t.Errorf("model %s: dataUrl = %q, want %q", c.model, e.dataUrl, c.wantData)
+		}
+	}
+}
+
+// concatenatedScript exercises the historical string-concatenation form for
+// tagValueList (seen in commented-out examples in real firmware, e.g. "8" +
+// "|1|..." + "|2|..."), which a prior version of extractTagValueList could
+// not parse.
+const concatenatedScript = `
+function InitUsTableTagValue()
+{
+    var tagValueList = "4" +
+        "|1|Not Locked|Unknown|0|0|0|0.0" +
+        "|2|Not Locked|Unknown|0|0|0|0.0" +
+        "|3|Not Locked|Unknown|0|0|0|0.0" +
+        "|4|Not Locked|Unknown|0|0|0|0.0";
+
+    return tagValueList.split("|");
+}
+`
+
+func TestExtractTagValueListConcatenatedLiterals(t *testing.T) {
+	fields, err := extractTagValueList(concatenatedScript, "InitUsTableTagValue")
+	if err != nil {
+		t.Fatalf("extractTagValueList: %v", err)
+	}
+	want := []string{
+		"4",
+		"1", "Not Locked", "Unknown", "0", "0", "0", "0.0",
+		"2", "Not Locked", "Unknown", "0", "0", "0", "0.0",
+		"3", "Not Locked", "Unknown", "0", "0", "0", "0.0",
+		"4", "Not Locked", "Unknown", "0", "0", "0", "0.0",
+	}
+	if len(fields) != len(want) {
+		t.Fatalf("got %d fields, want %d: %v", len(fields), len(want), fields)
+	}
+	for i := range want {
+		if fields[i] != want[i] {
+			t.Errorf("fields[%d] = %q, want %q", i, fields[i], want[i])
+		}
+	}
+}
+
+// nestedBraceScript exercises a function body containing a brace pair before
+// the tagValueList assignment, which a naive non-greedy single-brace match
+// would truncate at.
+const nestedBraceScript = `
+function InitDsTableTagValue()
+{
+    if (needsRefresh) { doRefresh(); }
+    var tagValueList = '1|1|Locked|QAM256|1|100000000 Hz|1.0|40|1|0';
+
+    return tagValueList.split("|");
+}
+`
+
+func TestExtractTagValueListNestedBraces(t *testing.T) {
+	fields, err := extractTagValueList(nestedBraceScript, "InitDsTableTagValue")
+	if err != nil {
+		t.Fatalf("extractTagValueList: %v", err)
+	}
+	want := []string{"1", "1", "Locked", "QAM256", "1", "100000000 Hz", "1.0", "40", "1", "0"}
+	if len(fields) != len(want) {
+		t.Fatalf("got %d fields, want %d: %v", len(fields), len(want), fields)
+	}
+	for i := range want {
+		if fields[i] != want[i] {
+			t.Errorf("fields[%d] = %q, want %q", i, fields[i], want[i])
+		}
+	}
+}
+
 // cm3000Script is the literal DocsisStatus.htm script content reported in
 // https://github.com/yzguy/netgear_cm_exporter/issues/1, used to validate
 // the tagValueList extraction and parsing against real device output.

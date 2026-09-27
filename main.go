@@ -241,6 +241,12 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 func (e *Exporter) collectCM1000(ch chan<- prometheus.Metric) error {
 	c := colly.NewCollector()
 
+	// OnError callback logs any errors that occur during scraping. Registered
+	// before the login POST below so it also covers that request.
+	c.OnError(func(r *colly.Response, err error) {
+		log.Printf("scrape failed: %d %s", r.StatusCode, http.StatusText(r.StatusCode))
+	})
+
 	// Retrieve current webToken
 	webToken, err := e.GetWebToken()
 	if err != nil {
@@ -256,11 +262,6 @@ func (e *Exporter) collectCM1000(ch chan<- prometheus.Metric) error {
 	}); err != nil {
 		return err
 	}
-
-	// OnError callback counts any errors that occur during scraping.
-	c.OnError(func(r *colly.Response, err error) {
-		log.Printf("scrape failed: %d %s", r.StatusCode, http.StatusText(r.StatusCode))
-	})
 
 	// Callback to parse the tbody block of table with id=dsTable, the downstream table info.
 	c.OnHTML(`#dsTable tbody`, func(elem *colly.HTMLElement) {
@@ -370,8 +371,15 @@ func (e *Exporter) collectCM3000(ch chan<- prometheus.Metric) error {
 		loginActionUrl = e.baseUrl + elem.Attr("action")
 	})
 
+	// Only capture <script> content from the data page itself: this
+	// collector is reused for Login.htm too, and if the session isn't
+	// authenticated DocsisStatus.htm may just redirect back to the login
+	// page, so scoping this avoids silently parsing the wrong page's markup.
 	var scriptText strings.Builder
 	c.OnHTML(`script`, func(elem *colly.HTMLElement) {
+		if elem.Request == nil || elem.Request.URL == nil || elem.Request.URL.String() != e.dataUrl {
+			return
+		}
 		scriptText.WriteString(elem.Text)
 		scriptText.WriteString("\n")
 	})
@@ -402,11 +410,16 @@ func (e *Exporter) collectCM3000(ch chan<- prometheus.Metric) error {
 	}
 
 	script := scriptText.String()
+	var parseErrs []error
 
 	if dsChannels, err := parseDsQamChannels(script); err != nil {
 		log.Printf("failed to parse downstream QAM channels: %s", err)
+		parseErrs = append(parseErrs, err)
 	} else {
 		for _, ch2 := range dsChannels {
+			// channelType (e.g. "ATDMA") fills the same "modulation" label
+			// slot the CM1000 upstream table uses for its channel access
+			// type, so the label set stays consistent across models.
 			labels := []string{ch2.channel, ch2.lockStatus, ch2.modulation, ch2.channelID, ch2.frequency}
 			ch <- prometheus.MustNewConstMetric(e.dsChannelPower, prometheus.GaugeValue, ch2.power, labels...)
 			ch <- prometheus.MustNewConstMetric(e.dsChannelSNR, prometheus.GaugeValue, ch2.snr, labels...)
@@ -417,6 +430,7 @@ func (e *Exporter) collectCM3000(ch chan<- prometheus.Metric) error {
 
 	if usChannels, err := parseUsAtdmaChannels(script); err != nil {
 		log.Printf("failed to parse upstream ATDMA channels: %s", err)
+		parseErrs = append(parseErrs, err)
 	} else {
 		for _, ch2 := range usChannels {
 			labels := []string{ch2.channel, ch2.lockStatus, ch2.channelType, ch2.channelID, ch2.frequency}
@@ -426,6 +440,7 @@ func (e *Exporter) collectCM3000(ch chan<- prometheus.Metric) error {
 
 	if dsOfdmChannels, err := parseDsOfdmChannels(script); err != nil {
 		log.Printf("failed to parse downstream OFDM channels: %s", err)
+		parseErrs = append(parseErrs, err)
 	} else {
 		for _, ch2 := range dsOfdmChannels {
 			labels := []string{ch2.channel, ch2.lockStatus, ch2.profile, ch2.channelID, ch2.frequency}
@@ -439,11 +454,20 @@ func (e *Exporter) collectCM3000(ch chan<- prometheus.Metric) error {
 
 	if usOfdmaChannels, err := parseUsOfdmaChannels(script); err != nil {
 		log.Printf("failed to parse upstream OFDMA channels: %s", err)
+		parseErrs = append(parseErrs, err)
 	} else {
 		for _, ch2 := range usOfdmaChannels {
 			labels := []string{ch2.channel, ch2.lockStatus, ch2.profile, ch2.channelID, ch2.frequency}
 			ch <- prometheus.MustNewConstMetric(e.usOfdmaChannelPower, prometheus.GaugeValue, ch2.power, labels...)
 		}
+	}
+
+	// If every channel family failed to parse, something is structurally
+	// wrong (e.g. an unauthenticated session redirected back to the login
+	// page) rather than the modem simply lacking one channel type. Surface
+	// that as a scrape error instead of reporting a quiet, empty success.
+	if len(parseErrs) == 4 {
+		return fmt.Errorf("failed to parse any channel data from %s: %w", e.dataUrl, parseErrs[0])
 	}
 
 	return nil
@@ -457,28 +481,55 @@ func hzTextToMHzLabel(text string) string {
 	return fmt.Sprintf("%0.2f MHz", freqHz/1e6)
 }
 
-var blockCommentRe = regexp.MustCompile(`(?s)/\*.*?\*/`)
+var (
+	blockCommentRe  = regexp.MustCompile(`(?s)/\*.*?\*/`)
+	nextFunctionRe  = regexp.MustCompile(`function\s+\w+\s*\(`)
+	assignmentRe    = regexp.MustCompile(`(?s)tagValueList\s*=\s*([^;]+);`)
+	stringLiteralRe = regexp.MustCompile(`'([^']*)'|"([^"]*)"`)
+)
 
 // extractTagValueList finds the given JS function (e.g. InitDsTableTagValue)
 // within script and returns the pipe-delimited fields assigned to its
 // tagValueList variable, with any trailing empty field (from a trailing "|")
 // removed.
+//
+// The function body is bounded by the start of the next top-level function
+// (or end of script) rather than by brace-matching, since firmware in the
+// wild has been observed building tagValueList by concatenating several
+// quoted string literals (e.g. "8" + "|1|..." + "|2|...") rather than using
+// a single literal, and any nested braces in a future firmware revision
+// would otherwise truncate a naive single-brace match.
 func extractTagValueList(script, funcName string) ([]string, error) {
 	noComments := blockCommentRe.ReplaceAllString(script, "")
 
-	funcRe := regexp.MustCompile(`(?s)function\s+` + regexp.QuoteMeta(funcName) + `\s*\([^)]*\)\s*\{(.*?)\}`)
-	fm := funcRe.FindStringSubmatch(noComments)
-	if fm == nil {
+	startRe := regexp.MustCompile(`function\s+` + regexp.QuoteMeta(funcName) + `\s*\([^)]*\)`)
+	loc := startRe.FindStringIndex(noComments)
+	if loc == nil {
 		return nil, fmt.Errorf("function %s not found", funcName)
 	}
 
-	valueRe := regexp.MustCompile(`tagValueList\s*=\s*'([^']*)'`)
-	vm := valueRe.FindStringSubmatch(fm[1])
-	if vm == nil {
+	body := noComments[loc[1]:]
+	if next := nextFunctionRe.FindStringIndex(body); next != nil {
+		body = body[:next[0]]
+	}
+
+	am := assignmentRe.FindStringSubmatch(body)
+	if am == nil {
 		return nil, fmt.Errorf("tagValueList not found in %s", funcName)
 	}
 
-	fields := strings.Split(vm[1], "|")
+	literals := stringLiteralRe.FindAllStringSubmatch(am[1], -1)
+	if literals == nil {
+		return nil, fmt.Errorf("tagValueList not found in %s", funcName)
+	}
+
+	var raw strings.Builder
+	for _, lm := range literals {
+		raw.WriteString(lm[1])
+		raw.WriteString(lm[2])
+	}
+
+	fields := strings.Split(raw.String(), "|")
 	if len(fields) > 0 && fields[len(fields)-1] == "" {
 		fields = fields[:len(fields)-1]
 	}
