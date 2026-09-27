@@ -1,5 +1,5 @@
 repository:
-    path: github.com/ickymettle/netgear_cm_exporter
+    path: github.com/yzguy/netgear_cm_exporter
 build:
     binaries:
         - name: netgear_cm_exporter

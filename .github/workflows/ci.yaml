@@ -1,26 +1,39 @@
 name: CI
 
-on: [push]
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v3
-        with:
-          fetch-depth: 1
+      - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v3
+      - uses: actions/setup-go@v5
         with:
           go-version-file: 'go.mod'
 
       - uses: dominikh/staticcheck-action@v1.3.0
         with:
-           install-go: false
+          version: '2023.1.2'
+          install-go: false
+
+      - name: Vet
+        run: go vet ./...
 
       - name: Test
-        run: make ci
+        run: go test -race ./...
 
       - name: Build
         run: make build

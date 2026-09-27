@@ -54,3 +54,11 @@ A sample grafana dashboard can be found in the `grafana/` directory. You can imp
 your Grafana instance to get up and running with a quick dashboard.
 
 ![Grafana Dashboard Screenshot](/grafana/dashboard_screenshot.png)
+
+## Credits
+
+This project began as a copy of Marcus Barczak's (
+[ickymettle](https://github.com/ickymettle/netgear_cm_exporter)) original `netgear_cm_exporter`,
+which is now archived. Full original commit history is preserved here; it's just not a GitHub
+"fork" in the platform sense, since the repo was recreated independently rather than forked
+through GitHub.
