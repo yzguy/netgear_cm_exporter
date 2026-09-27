@@ -7,6 +7,13 @@ Prometheus exporter for NETGEAR cable modems
 These Netgear models have been tested and are officially supported:
 
 * Netgear CM1000
+* Netgear CM3000
+
+Set `modem.model` in your config file to `CM1000` (default) or `CM3000` to match your device. Newer
+Netgear firmware (as used on the CM3000) exposes docsis status through a different login flow and
+embeds channel data as JavaScript rather than static HTML, so the two models are scraped differently
+under the hood but expose the same downstream/upstream metrics. The CM3000 additionally exposes
+metrics for its DOCSIS 3.1 OFDM/OFDMA channels.
 
 ## Installation
 

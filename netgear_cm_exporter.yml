@@ -2,6 +2,8 @@ modem:
   address: 192.168.100.1
   username: admin
   password: yourpassword
+  # model: one of CM1000, CM3000 (default: CM1000)
+  model: CM1000
 
 telemetry:
   listen_address: 127.0.0.1:9527

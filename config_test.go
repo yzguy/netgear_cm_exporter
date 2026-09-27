@@ -12,6 +12,7 @@ func TestNewConfigFromFile(t *testing.T) {
 			Address:  "192.168.100.1",
 			Username: "admin",
 			Password: "foobaz",
+			Model:    ModelCM1000,
 		},
 		Telemetry: Telemetry{
 			ListenAddress: ":9527",

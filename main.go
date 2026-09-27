@@ -6,6 +6,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -27,6 +29,8 @@ var (
 
 // Exporter represents an instance of the Netgear cable modem exporter.
 type Exporter struct {
+	model    string
+	baseUrl  string
 	indexUrl string
 	loginUrl string
 	dataUrl  string
@@ -39,30 +43,41 @@ type Exporter struct {
 	totalScrapes prometheus.Counter
 	scrapeErrors prometheus.Counter
 
-	// Downstream metrics.
+	// Downstream QAM channel metrics.
 	dsChannelPower                  *prometheus.Desc
 	dsChannelSNR                    *prometheus.Desc
 	dsChannelUnerroredCodewords     *prometheus.Desc
 	dsChannelCorrectableCodewords   *prometheus.Desc
 	dsChannelUncorrectableCodewords *prometheus.Desc
 
-	// Upstream metrics.
+	// Upstream ATDMA channel metrics.
 	usChannelPower *prometheus.Desc
+
+	// Downstream OFDM channel metrics (DOCSIS 3.1, e.g. CM3000).
+	dsOfdmChannelPower                  *prometheus.Desc
+	dsOfdmChannelSNR                    *prometheus.Desc
+	dsOfdmChannelUnerroredCodewords     *prometheus.Desc
+	dsOfdmChannelCorrectableCodewords   *prometheus.Desc
+	dsOfdmChannelUncorrectableCodewords *prometheus.Desc
+
+	// Upstream OFDMA channel metrics (DOCSIS 3.1, e.g. CM3000).
+	usOfdmaChannelPower *prometheus.Desc
 }
 
 // NewExporter returns an instance of Exporter configured with the modem's
-// address, admin username and password.
-func NewExporter(addr, username, password string) *Exporter {
+// address, admin username, password and model.
+func NewExporter(addr, username, password, model string) *Exporter {
 	var (
-		dsLabelNames = []string{"channel", "lock_status", "modulation", "channel_id", "frequency"}
-		usLabelNames = []string{"channel", "lock_status", "modulation", "channel_id", "frequency"}
+		dsLabelNames      = []string{"channel", "lock_status", "modulation", "channel_id", "frequency"}
+		usLabelNames      = []string{"channel", "lock_status", "modulation", "channel_id", "frequency"}
+		dsOfdmLabelNames  = []string{"channel", "lock_status", "profile", "channel_id", "frequency"}
+		usOfdmaLabelNames = []string{"channel", "lock_status", "profile", "channel_id", "frequency"}
 	)
 
-	return &Exporter{
+	e := &Exporter{
 		// Modem access details.
-		indexUrl: "http://" + addr + "/GenieLogin.asp",
-		loginUrl: "http://" + addr + "/goform/GenieLogin",
-		dataUrl:  "http://" + addr + "/DocsisStatus.asp",
+		model:    model,
+		baseUrl:  "http://" + addr,
 		username: username,
 		password: password,
 
@@ -78,7 +93,7 @@ func NewExporter(addr, username, password string) *Exporter {
 			Help:      "Total number of failed scrapes of the modem status page.",
 		}),
 
-		// Downstream metrics.
+		// Downstream QAM channel metrics.
 		dsChannelPower: prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, "downstream_channel", "power_dbmv"),
 			"Downstream channel power in dBmV.",
@@ -105,13 +120,59 @@ func NewExporter(addr, username, password string) *Exporter {
 			dsLabelNames, nil,
 		),
 
-		// Upstream metrics.
+		// Upstream ATDMA channel metrics.
 		usChannelPower: prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, "upstream_channel", "power_dbmv"),
 			"Upstream channel power in dBmV.",
 			usLabelNames, nil,
 		),
+
+		// Downstream OFDM channel metrics.
+		dsOfdmChannelPower: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "downstream_ofdm_channel", "power_dbmv"),
+			"Downstream OFDM channel power in dBmV.",
+			dsOfdmLabelNames, nil,
+		),
+		dsOfdmChannelSNR: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "downstream_ofdm_channel", "snr_mer_db"),
+			"Downstream OFDM channel signal to noise / modulation error ratio in dB.",
+			dsOfdmLabelNames, nil,
+		),
+		dsOfdmChannelUnerroredCodewords: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "downstream_ofdm_channel", "unerrored_codewords_total"),
+			"Downstream OFDM channel unerrored codewords.",
+			dsOfdmLabelNames, nil,
+		),
+		dsOfdmChannelCorrectableCodewords: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "downstream_ofdm_channel", "correctable_codewords_total"),
+			"Downstream OFDM channel correctable errors.",
+			dsOfdmLabelNames, nil,
+		),
+		dsOfdmChannelUncorrectableCodewords: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "downstream_ofdm_channel", "uncorrectable_codewords_total"),
+			"Downstream OFDM channel uncorrectable errors.",
+			dsOfdmLabelNames, nil,
+		),
+
+		// Upstream OFDMA channel metrics.
+		usOfdmaChannelPower: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "upstream_ofdma_channel", "power_dbmv"),
+			"Upstream OFDMA channel power in dBmV.",
+			usOfdmaLabelNames, nil,
+		),
 	}
+
+	switch model {
+	case ModelCM3000:
+		e.indexUrl = e.baseUrl + "/Login.htm"
+		e.dataUrl = e.baseUrl + "/DocsisStatus.htm"
+	default: // ModelCM1000
+		e.indexUrl = e.baseUrl + "/GenieLogin.asp"
+		e.loginUrl = e.baseUrl + "/goform/GenieLogin"
+		e.dataUrl = e.baseUrl + "/DocsisStatus.asp"
+	}
+
+	return e
 }
 
 // Describe returns Prometheus metric descriptions for the exporter metrics.
@@ -127,6 +188,14 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 	ch <- e.dsChannelUncorrectableCodewords
 	// Upstream metrics.
 	ch <- e.usChannelPower
+	// Downstream OFDM metrics.
+	ch <- e.dsOfdmChannelPower
+	ch <- e.dsOfdmChannelSNR
+	ch <- e.dsOfdmChannelUnerroredCodewords
+	ch <- e.dsOfdmChannelCorrectableCodewords
+	ch <- e.dsOfdmChannelUncorrectableCodewords
+	// Upstream OFDMA metrics.
+	ch <- e.usOfdmaChannelPower
 }
 
 func (e *Exporter) GetWebToken() (string, error) {
@@ -150,30 +219,47 @@ func (e *Exporter) GetWebToken() (string, error) {
 func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	e.totalScrapes.Inc()
 
+	e.mu.Lock()
+	var err error
+	switch e.model {
+	case ModelCM3000:
+		err = e.collectCM3000(ch)
+	default: // ModelCM1000
+		err = e.collectCM1000(ch)
+	}
+	if err != nil {
+		log.Printf("scrape failed: %s", err)
+		e.scrapeErrors.Inc()
+	}
+	e.totalScrapes.Collect(ch)
+	e.scrapeErrors.Collect(ch)
+	e.mu.Unlock()
+}
+
+// collectCM1000 scrapes a CM1000-style modem, where channel data is rendered
+// server-side as static HTML tables.
+func (e *Exporter) collectCM1000(ch chan<- prometheus.Metric) error {
 	c := colly.NewCollector()
 
 	// Retrieve current webToken
 	webToken, err := e.GetWebToken()
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
-	//log.Printf("Current web token: %s", webToken)
 
 	// Login to get a session cookie
-	err = c.Post(e.loginUrl, map[string]string{
+	if err := c.Post(e.loginUrl, map[string]string{
 		"loginUsername": e.username,
 		"loginPassword": e.password,
 		"login":         "1",
 		"webToken":      webToken,
-	})
-	if err != nil {
-		log.Fatal(err)
+	}); err != nil {
+		return err
 	}
 
 	// OnError callback counts any errors that occur during scraping.
 	c.OnError(func(r *colly.Response, err error) {
 		log.Printf("scrape failed: %d %s", r.StatusCode, http.StatusText(r.StatusCode))
-		e.scrapeErrors.Inc()
 	})
 
 	// Callback to parse the tbody block of table with id=dsTable, the downstream table info.
@@ -207,11 +293,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 				case 3:
 					channelID = text
 				case 4:
-					{
-						var freqHZ float64
-						fmt.Sscanf(text, "%f Hz", &freqHZ)
-						freqMHz = fmt.Sprintf("%0.2f MHz", freqHZ/1e6)
-					}
+					freqMHz = hzTextToMHzLabel(text)
 				case 5:
 					fmt.Sscanf(text, "%f dBmV", &power)
 				case 6:
@@ -260,11 +342,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 				case 3:
 					channelID = text
 				case 4:
-					{
-						var freqHZ float64
-						fmt.Sscanf(text, "%f Hz", &freqHZ)
-						freqMHz = fmt.Sprintf("%0.2f MHz", freqHZ/1e6)
-					}
+					freqMHz = hzTextToMHzLabel(text)
 				case 5:
 					fmt.Sscanf(text, "%f dBmV", &power)
 				}
@@ -275,11 +353,300 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 		})
 	})
 
-	e.mu.Lock()
-	c.Visit(e.dataUrl)
-	e.totalScrapes.Collect(ch)
-	e.scrapeErrors.Collect(ch)
-	e.mu.Unlock()
+	return c.Visit(e.dataUrl)
+}
+
+// collectCM3000 scrapes a CM3000-style modem. Newer Netgear firmware no
+// longer renders channel data as static HTML: DocsisStatus.htm instead
+// embeds it as pipe-delimited strings inside inline <script> tags (see
+// tagValueList in InitDsTableTagValue, InitUsTableTagValue, etc). Login also
+// changed: Login.htm sets an XSRF cookie and its form's "action" attribute
+// carries the login URL (including the required "id" query parameter).
+func (e *Exporter) collectCM3000(ch chan<- prometheus.Metric) error {
+	c := colly.NewCollector()
+
+	var loginActionUrl string
+	c.OnHTML(`form[name="loginform"]`, func(elem *colly.HTMLElement) {
+		loginActionUrl = e.baseUrl + elem.Attr("action")
+	})
+
+	var scriptText strings.Builder
+	c.OnHTML(`script`, func(elem *colly.HTMLElement) {
+		scriptText.WriteString(elem.Text)
+		scriptText.WriteString("\n")
+	})
+
+	c.OnError(func(r *colly.Response, err error) {
+		log.Printf("scrape failed: %d %s", r.StatusCode, http.StatusText(r.StatusCode))
+	})
+
+	// Visiting Login.htm captures the XSRF cookie (handled transparently by
+	// colly's cookie jar) and the login form's action URL.
+	if err := c.Visit(e.indexUrl); err != nil {
+		return err
+	}
+
+	if loginActionUrl == "" {
+		return fmt.Errorf("could not find login form action on %s", e.indexUrl)
+	}
+
+	if err := c.Post(loginActionUrl, map[string]string{
+		"loginName":     e.username,
+		"loginPassword": e.password,
+	}); err != nil {
+		return err
+	}
+
+	if err := c.Visit(e.dataUrl); err != nil {
+		return err
+	}
+
+	script := scriptText.String()
+
+	if dsChannels, err := parseDsQamChannels(script); err != nil {
+		log.Printf("failed to parse downstream QAM channels: %s", err)
+	} else {
+		for _, ch2 := range dsChannels {
+			labels := []string{ch2.channel, ch2.lockStatus, ch2.modulation, ch2.channelID, ch2.frequency}
+			ch <- prometheus.MustNewConstMetric(e.dsChannelPower, prometheus.GaugeValue, ch2.power, labels...)
+			ch <- prometheus.MustNewConstMetric(e.dsChannelSNR, prometheus.GaugeValue, ch2.snr, labels...)
+			ch <- prometheus.MustNewConstMetric(e.dsChannelCorrectableCodewords, prometheus.CounterValue, ch2.correctable, labels...)
+			ch <- prometheus.MustNewConstMetric(e.dsChannelUncorrectableCodewords, prometheus.CounterValue, ch2.uncorrectable, labels...)
+		}
+	}
+
+	if usChannels, err := parseUsAtdmaChannels(script); err != nil {
+		log.Printf("failed to parse upstream ATDMA channels: %s", err)
+	} else {
+		for _, ch2 := range usChannels {
+			labels := []string{ch2.channel, ch2.lockStatus, ch2.channelType, ch2.channelID, ch2.frequency}
+			ch <- prometheus.MustNewConstMetric(e.usChannelPower, prometheus.GaugeValue, ch2.power, labels...)
+		}
+	}
+
+	if dsOfdmChannels, err := parseDsOfdmChannels(script); err != nil {
+		log.Printf("failed to parse downstream OFDM channels: %s", err)
+	} else {
+		for _, ch2 := range dsOfdmChannels {
+			labels := []string{ch2.channel, ch2.lockStatus, ch2.profile, ch2.channelID, ch2.frequency}
+			ch <- prometheus.MustNewConstMetric(e.dsOfdmChannelPower, prometheus.GaugeValue, ch2.power, labels...)
+			ch <- prometheus.MustNewConstMetric(e.dsOfdmChannelSNR, prometheus.GaugeValue, ch2.snr, labels...)
+			ch <- prometheus.MustNewConstMetric(e.dsOfdmChannelUnerroredCodewords, prometheus.CounterValue, ch2.unerrored, labels...)
+			ch <- prometheus.MustNewConstMetric(e.dsOfdmChannelCorrectableCodewords, prometheus.CounterValue, ch2.correctable, labels...)
+			ch <- prometheus.MustNewConstMetric(e.dsOfdmChannelUncorrectableCodewords, prometheus.CounterValue, ch2.uncorrectable, labels...)
+		}
+	}
+
+	if usOfdmaChannels, err := parseUsOfdmaChannels(script); err != nil {
+		log.Printf("failed to parse upstream OFDMA channels: %s", err)
+	} else {
+		for _, ch2 := range usOfdmaChannels {
+			labels := []string{ch2.channel, ch2.lockStatus, ch2.profile, ch2.channelID, ch2.frequency}
+			ch <- prometheus.MustNewConstMetric(e.usOfdmaChannelPower, prometheus.GaugeValue, ch2.power, labels...)
+		}
+	}
+
+	return nil
+}
+
+// hzTextToMHzLabel converts a "<n> Hz" string, as found in CM1000 HTML
+// tables, into a "<n> MHz" label matching the exporter's existing format.
+func hzTextToMHzLabel(text string) string {
+	var freqHz float64
+	fmt.Sscanf(text, "%f Hz", &freqHz)
+	return fmt.Sprintf("%0.2f MHz", freqHz/1e6)
+}
+
+var blockCommentRe = regexp.MustCompile(`(?s)/\*.*?\*/`)
+
+// extractTagValueList finds the given JS function (e.g. InitDsTableTagValue)
+// within script and returns the pipe-delimited fields assigned to its
+// tagValueList variable, with any trailing empty field (from a trailing "|")
+// removed.
+func extractTagValueList(script, funcName string) ([]string, error) {
+	noComments := blockCommentRe.ReplaceAllString(script, "")
+
+	funcRe := regexp.MustCompile(`(?s)function\s+` + regexp.QuoteMeta(funcName) + `\s*\([^)]*\)\s*\{(.*?)\}`)
+	fm := funcRe.FindStringSubmatch(noComments)
+	if fm == nil {
+		return nil, fmt.Errorf("function %s not found", funcName)
+	}
+
+	valueRe := regexp.MustCompile(`tagValueList\s*=\s*'([^']*)'`)
+	vm := valueRe.FindStringSubmatch(fm[1])
+	if vm == nil {
+		return nil, fmt.Errorf("tagValueList not found in %s", funcName)
+	}
+
+	fields := strings.Split(vm[1], "|")
+	if len(fields) > 0 && fields[len(fields)-1] == "" {
+		fields = fields[:len(fields)-1]
+	}
+	return fields, nil
+}
+
+// channelGroups splits fields (a leading channel count followed by
+// fixed-size groups of per-channel values) into those groups.
+func channelGroups(fields []string, groupSize int) ([][]string, error) {
+	if len(fields) < 1 {
+		return nil, fmt.Errorf("expected a leading channel count, got no fields")
+	}
+	count, err := strconv.Atoi(fields[0])
+	if err != nil {
+		return nil, fmt.Errorf("invalid channel count %q: %w", fields[0], err)
+	}
+
+	rest := fields[1:]
+	if len(rest) < count*groupSize {
+		return nil, fmt.Errorf("expected %d fields for %d channels, got %d", count*groupSize, count, len(rest))
+	}
+
+	groups := make([][]string, 0, count)
+	for i := 0; i < count; i++ {
+		groups = append(groups, rest[i*groupSize:(i+1)*groupSize])
+	}
+	return groups, nil
+}
+
+type dsQamChannel struct {
+	channel, lockStatus, modulation, channelID, frequency string
+	power, snr, correctable, uncorrectable                float64
+}
+
+// parseDsQamChannels parses the InitDsTableTagValue tagValueList: Channel |
+// Lock Status | Modulation | Channel ID | Frequency | Power | SNR |
+// Correctables | Uncorrectables.
+func parseDsQamChannels(script string) ([]dsQamChannel, error) {
+	fields, err := extractTagValueList(script, "InitDsTableTagValue")
+	if err != nil {
+		return nil, err
+	}
+	groups, err := channelGroups(fields, 9)
+	if err != nil {
+		return nil, err
+	}
+
+	channels := make([]dsQamChannel, 0, len(groups))
+	for _, g := range groups {
+		c := dsQamChannel{
+			channel:    g[0],
+			lockStatus: g[1],
+			modulation: g[2],
+			channelID:  g[3],
+			frequency:  hzTextToMHzLabel(g[4]),
+		}
+		fmt.Sscanf(g[5], "%f", &c.power)
+		fmt.Sscanf(g[6], "%f", &c.snr)
+		fmt.Sscanf(g[7], "%f", &c.correctable)
+		fmt.Sscanf(g[8], "%f", &c.uncorrectable)
+		channels = append(channels, c)
+	}
+	return channels, nil
+}
+
+type usAtdmaChannel struct {
+	channel, lockStatus, channelType, channelID, frequency string
+	power                                                  float64
+}
+
+// parseUsAtdmaChannels parses the InitUsTableTagValue tagValueList: Channel |
+// Lock Status | US Channel Type | Channel ID | Symbol Rate | Frequency |
+// Power. The symbol rate is dropped to keep the same label set as the
+// CM1000's upstream channel metric.
+func parseUsAtdmaChannels(script string) ([]usAtdmaChannel, error) {
+	fields, err := extractTagValueList(script, "InitUsTableTagValue")
+	if err != nil {
+		return nil, err
+	}
+	groups, err := channelGroups(fields, 7)
+	if err != nil {
+		return nil, err
+	}
+
+	channels := make([]usAtdmaChannel, 0, len(groups))
+	for _, g := range groups {
+		c := usAtdmaChannel{
+			channel:     g[0],
+			lockStatus:  g[1],
+			channelType: g[2],
+			channelID:   g[3],
+			frequency:   hzTextToMHzLabel(g[5]),
+		}
+		fmt.Sscanf(g[6], "%f dBmV", &c.power)
+		channels = append(channels, c)
+	}
+	return channels, nil
+}
+
+type dsOfdmChannel struct {
+	channel, lockStatus, profile, channelID, frequency string
+	power, snr                                         float64
+	unerrored, correctable, uncorrectable              float64
+}
+
+// parseDsOfdmChannels parses the InitDsOfdmTableTagValue tagValueList:
+// Channel | Lock Status | Profile | Channel ID | Frequency | Power |
+// SNR/MER | Active Subcarrier Range | Unerrored Codewords | Correctable
+// Codewords | Uncorrectable Codewords.
+func parseDsOfdmChannels(script string) ([]dsOfdmChannel, error) {
+	fields, err := extractTagValueList(script, "InitDsOfdmTableTagValue")
+	if err != nil {
+		return nil, err
+	}
+	groups, err := channelGroups(fields, 11)
+	if err != nil {
+		return nil, err
+	}
+
+	channels := make([]dsOfdmChannel, 0, len(groups))
+	for _, g := range groups {
+		c := dsOfdmChannel{
+			channel:    g[0],
+			lockStatus: g[1],
+			profile:    strings.TrimSpace(g[2]),
+			channelID:  g[3],
+			frequency:  hzTextToMHzLabel(g[4]),
+		}
+		fmt.Sscanf(g[5], "%f dBmV", &c.power)
+		fmt.Sscanf(g[6], "%f dB", &c.snr)
+		fmt.Sscanf(g[8], "%f", &c.unerrored)
+		fmt.Sscanf(g[9], "%f", &c.correctable)
+		fmt.Sscanf(g[10], "%f", &c.uncorrectable)
+		channels = append(channels, c)
+	}
+	return channels, nil
+}
+
+type usOfdmaChannel struct {
+	channel, lockStatus, profile, channelID, frequency string
+	power                                              float64
+}
+
+// parseUsOfdmaChannels parses the InitUsOfdmaTableTagValue tagValueList:
+// Channel | Lock Status | Profile | Channel ID | Frequency | Power.
+func parseUsOfdmaChannels(script string) ([]usOfdmaChannel, error) {
+	fields, err := extractTagValueList(script, "InitUsOfdmaTableTagValue")
+	if err != nil {
+		return nil, err
+	}
+	groups, err := channelGroups(fields, 6)
+	if err != nil {
+		return nil, err
+	}
+
+	channels := make([]usOfdmaChannel, 0, len(groups))
+	for _, g := range groups {
+		c := usOfdmaChannel{
+			channel:    g[0],
+			lockStatus: g[1],
+			profile:    strings.TrimSpace(g[2]),
+			channelID:  g[3],
+			frequency:  hzTextToMHzLabel(g[4]),
+		}
+		fmt.Sscanf(g[5], "%f dBmV", &c.power)
+		channels = append(channels, c)
+	}
+	return channels, nil
 }
 
 func main() {
@@ -300,7 +667,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	exporter := NewExporter(config.Modem.Address, config.Modem.Username, config.Modem.Password)
+	exporter := NewExporter(config.Modem.Address, config.Modem.Username, config.Modem.Password, config.Modem.Model)
 
 	prometheus.MustRegister(exporter)
 
