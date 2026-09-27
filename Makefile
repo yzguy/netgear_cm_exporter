@@ -45,7 +45,7 @@ staticcheck:
 ci: vet staticcheck test
 
 prereq:
-	go install honnef.co/go/tools/cmd/staticcheck@2023.1.2
+	go install honnef.co/go/tools/cmd/staticcheck@2026.2.1
 
 clean:
 	rm -f $(BINARY)

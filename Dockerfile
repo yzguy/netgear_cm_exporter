@@ -1,10 +1,10 @@
-FROM golang:1.20.1 AS builder
+FROM golang:1.27.1 AS builder
 
 WORKDIR /usr/src/app
 COPY . .
 RUN CGO_ENABLED=0 go build -v -o /usr/src/app/netgear_cm_exporter .
 
-FROM alpine:3.17.3
+FROM alpine:3.24.2
 
 RUN mkdir -p /etc/netgear_cm_exporter
 COPY --from=builder /usr/src/app/netgear_cm_exporter /usr/local/bin
